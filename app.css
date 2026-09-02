@@ -50,6 +50,7 @@
 .pt-10 { padding-top: 2.5rem; }
 .pb-2 { padding-bottom: 0.5rem; }
 .p-1 { padding: 0.25rem; }
+.p-1\.5 { padding: 0.375rem; }
 .p-3 { padding: 0.75rem; }
 .p-5 { padding: 1.25rem; }
 .px-1 { padding-left: 0.25rem; padding-right: 0.25rem; }
@@ -81,6 +82,7 @@
 .text-5xl { font-size: 3rem; line-height: 1; }
 .text-\[10px\] { font-size: 10px; }
 .text-center { text-align: center; }
+.text-left { text-align: left; }
 .font-bold { font-weight: 700; }
 .font-extrabold { font-weight: 800; }
 .uppercase { text-transform: uppercase; }
@@ -88,6 +90,7 @@
 .tracking-widest { letter-spacing: 0.1em; }
 
 .outline-none { outline: none; }
+.bg-transparent { background: transparent; }
 .transition-transform { transition-property: transform; transition-duration: 150ms; }
 .active\:scale-90:active { transform: scale(0.9); }
 

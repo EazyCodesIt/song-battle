@@ -83,6 +83,7 @@ function initialState() {
     defaultSource: "spotify",
     round: 1,
     activeTeam: 0,
+    turnOrderCount: 0, // increments every round; parity decides who starts (zig-zag)
     isSuddenDeath: false,
     captainSong: [emptySong("spotify"), emptySong("spotify")],
     locked: [false, false],
@@ -129,7 +130,8 @@ function beginPrep(suddenDeath) {
   state.locked = [false, false];
   state.revealed = [false, false];
   state.songDone = [false, false];
-  state.activeTeam = 0;
+  state.turnOrderCount += 1;
+  state.activeTeam = state.turnOrderCount % 2 === 1 ? 0 : 1; // zig-zag: alternate who goes first each round
   state.phase = "intro";
   timers.intro = setTimeout(() => {
     state.phase = "prep";
@@ -142,7 +144,6 @@ function schedulePrepAdvanceIfReady() {
     clearTimeout(timers.prep);
     timers.prep = setTimeout(() => {
       state.phase = "turn";
-      state.activeTeam = 0;
       broadcast();
     }, CONFIG.AUTO_ADVANCE_DELAY_MS);
   }
@@ -248,9 +249,10 @@ function handleAction(action) {
       state.songDone[state.activeTeam] = true;
       clearInterval(timers.play);
       break;
-    case "NEXT_TURN":
-      if (state.activeTeam === 0) {
-        state.activeTeam = 1;
+    case "NEXT_TURN": {
+      const otherTeam = 1 - state.activeTeam;
+      if (!state.songDone[otherTeam]) {
+        state.activeTeam = otherTeam;
         state.secondsLeft = turnSeconds();
         state.playing = false;
       } else {
@@ -262,6 +264,7 @@ function handleAction(action) {
         startVoteTimer();
       }
       break;
+    }
     case "CAST_VOTE": {
       const { pick, r0, r1 } = action;
       if (pick !== 0 && pick !== 1) break;

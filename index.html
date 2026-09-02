@@ -173,7 +173,7 @@ function YouTubeSearchBox({ dispatch, onPick, teamColor }) {
     return (React.createElement("div", { className: "flex flex-col gap-2" },
         React.createElement("div", { className: "flex items-center gap-2 px-3 py-2 rounded-lg", style: { background: "#1E1B2E", border: `1px solid ${teamColor}55` } },
             React.createElement(Search, { size: 14, color: "#9C96B8" }),
-            React.createElement("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search YouTube for a song\u2026", className: "flex-1 bg-transparent outline-none text-sm", style: { color: "#F5F3FF" } })),
+            React.createElement("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search YouTube for a song\u2026", className: "flex-1 bg-transparent outline-none text-sm", style: { color: "#F5F3FF", background: "transparent" } })),
         searching && React.createElement("p", { className: "text-[10px] text-center", style: { color: "#635D80" } }, "Searching\u2026"),
         err && React.createElement("p", { className: "text-[10px] text-center", style: { color: "#FF3D6E" } }, err),
         results.length > 0 && (React.createElement("div", { className: "flex flex-col gap-1.5", style: { maxHeight: 220, overflowY: "auto" } }, results.map((r) => (React.createElement("button", { key: r.videoId, onClick: () => onPick(r), className: "glowbtn flex items-center gap-2 p-1.5 rounded-lg text-left", style: { background: "#1E1B2E", border: "1px solid #2A2640" } },
@@ -183,16 +183,24 @@ function YouTubeSearchBox({ dispatch, onPick, teamColor }) {
                 React.createElement("p", { className: "text-[10px]", style: { color: "#9C96B8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, r.channelTitle)))))))));
 }
 // ============================================================================
-// Host-only real YouTube playback via the IFrame Player API. Renders nothing
-// on non-host views. Loads the API script once, then loads/seeks/plays the
-// active team's video whenever the server reveals it.
+// Real YouTube playback via the IFrame Player API. The player is created on
+// every device (harmless — it's just a hidden iframe on non-host devices),
+// but only the host device is ever allowed to actually call load/play/pause,
+// so audio only ever comes out of the host's speakers.
+//
+// IMPORTANT: the container <div> this attaches to must be permanently
+// present in the page (see its render below — visibility is toggled with
+// CSS, never by conditionally mounting/unmounting the element). If the div
+// only exists once a song is revealed, the API can finish loading before
+// that div ever appears, and the player never gets created — which is
+// exactly the "video only shows up after switching tabs" bug this fixes.
 // ============================================================================
 function useYouTubeHostPlayer({ isHost, phase, activeTeam, revealed, playing, captainSong }) {
     const playerRef = useRef(null);
     const [apiReady, setApiReady] = useState(!!window.YT && !!window.YT.Player);
     const containerRef = useRef(null);
     useEffect(() => {
-        if (!isHost || apiReady)
+        if (apiReady)
             return;
         if (window.YT && window.YT.Player) {
             setApiReady(true);
@@ -207,16 +215,16 @@ function useYouTubeHostPlayer({ isHost, phase, activeTeam, revealed, playing, ca
             tag.src = "https://www.youtube.com/iframe_api";
             document.head.appendChild(tag);
         }
-    }, [isHost, apiReady]);
+    }, [apiReady]);
     useEffect(() => {
-        if (!isHost || !apiReady || !containerRef.current || playerRef.current)
+        if (!apiReady || !containerRef.current || playerRef.current)
             return;
         playerRef.current = new window.YT.Player(containerRef.current, {
             height: "180",
             width: "320",
             playerVars: { playsinline: 1, controls: 1, rel: 0 },
         });
-    }, [isHost, apiReady]);
+    }, [apiReady]);
     useEffect(() => {
         if (!isHost || !playerRef.current || !playerRef.current.loadVideoById)
             return;
@@ -346,6 +354,11 @@ function MusicBattle() {
                 { k: "player", label: "📱 Player" },
             ].map((o) => (React.createElement("button", { key: o.k, onClick: () => setView(o.k), className: "glowbtn px-2.5 py-1.5 rounded-full text-xs font-bold", style: { background: view === o.k ? "#FFC53D" : "transparent", color: view === o.k ? "#100E1A" : "#9C96B8" } }, o.label))))),
         React.createElement("div", { className: "p-5", style: { minHeight: "540px" } },
+            React.createElement("div", { ref: hostPlayerContainerRef, style: {
+                    display: isHostView && phase === "turn" && revealed[activeTeam] && activeSongIsYouTube ? "flex" : "none",
+                    justifyContent: "center",
+                    marginBottom: 16,
+                } }),
             phase === "setup" && (React.createElement("div", { className: "flex flex-col gap-5 max-w-md mx-auto pt-6" },
                 React.createElement("div", { className: "flex items-center gap-2 justify-center" },
                     React.createElement(Tv, { size: 16, color: "#9C96B8" }),
@@ -450,7 +463,6 @@ function MusicBattle() {
                                 React.createElement(Radio, { size: 12, className: "animate-pulse" }),
                                 " PLAYING"),
                             songDone[activeTeam] && React.createElement("span", { className: "text-xs mt-1", style: { color: "#9C96B8" } }, "TIME'S UP"))),
-                    isHostView && activeSongIsYouTube && (React.createElement("div", { ref: hostPlayerContainerRef, style: { borderRadius: 12, overflow: "hidden" } })),
                     React.createElement("div", { className: "text-center px-4 py-2 rounded-lg", style: { background: TEAM_COLORS[activeTeam].dim } },
                         React.createElement("div", { className: "flex justify-center mb-1" },
                             React.createElement(SourceBadge, { source: captainSong[activeTeam].source })),
@@ -466,13 +478,13 @@ function MusicBattle() {
                     isActiveCaptain && playing && (React.createElement("button", { onClick: () => dispatch({ type: "STOP_SONG" }), className: "glowbtn px-5 py-2 rounded-lg flex items-center gap-2 font-bold", style: { background: "#2A2640", color: "#F5F3FF" } },
                         React.createElement(Square, { size: 16 }),
                         " Stop early")),
-                    songDone[activeTeam] && activeTeam === 0 && (view === "captain1" ? (React.createElement("button", { onClick: () => dispatch({ type: "NEXT_TURN" }), className: "glowbtn px-6 py-3 rounded-lg disp flex items-center gap-2", style: { background: "#FFC53D", color: "#100E1A" } },
+                    songDone[activeTeam] && !songDone[1 - activeTeam] && (view === `captain${1 - activeTeam}` ? (React.createElement("button", { onClick: () => dispatch({ type: "NEXT_TURN" }), className: "glowbtn px-6 py-3 rounded-lg disp flex items-center gap-2", style: { background: "#FFC53D", color: "#100E1A" } },
                         "START OUR TURN ",
                         React.createElement(ChevronRight, { size: 18 }))) : (React.createElement("p", { className: "text-xs", style: { color: "#9C96B8" } },
                         "Waiting for ",
-                        t1.name,
+                        teams[1 - activeTeam].name,
                         "'s captain to start their turn\u2026"))),
-                    songDone[activeTeam] && activeTeam === 1 && (view !== "host" ? (React.createElement("button", { onClick: () => dispatch({ type: "NEXT_TURN" }), className: "glowbtn px-6 py-3 rounded-lg disp flex items-center gap-2", style: { background: "#FFC53D", color: "#100E1A" } },
+                    songDone[activeTeam] && songDone[1 - activeTeam] && (view !== "host" ? (React.createElement("button", { onClick: () => dispatch({ type: "NEXT_TURN" }), className: "glowbtn px-6 py-3 rounded-lg disp flex items-center gap-2", style: { background: "#FFC53D", color: "#100E1A" } },
                         "GO TO VOTING ",
                         React.createElement(ChevronRight, { size: 18 }))) : (React.createElement("p", { className: "text-xs", style: { color: "#9C96B8" } }, "Both songs played \u2014 moving to voting\u2026"))))))),
             phase === "voting" && (React.createElement("div", { className: "flex flex-col gap-5 pt-2" },
