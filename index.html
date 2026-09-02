@@ -69,6 +69,7 @@ const Music4 = makeIcon("♪");
 const Youtube = makeIcon("▶");
 const Flame = makeIcon("🔥");
 const AlertTriangle = makeIcon("⚠");
+const Search = makeIcon("🔍");
 const PLATFORM_ICON = { spotify: Music2, youtube: Youtube, apple: Music4 };
 function fmt(s) {
     const v = Math.max(0, Math.round(s || 0));
@@ -87,7 +88,7 @@ function parseTimeStr(str) {
     return isNaN(n) ? 0 : n;
 }
 function platformInfo(key) { return CONFIG.PLATFORMS.find((p) => p.key === key) || CONFIG.PLATFORMS[0]; }
-function emptySong(source) { return { title: "", artist: "", startAt: 0, source }; }
+function emptySong(source) { return { title: "", artist: "", startAt: 0, source, videoId: null }; }
 function avg(arr) {
     const nz = (arr || []).filter((x) => x > 0);
     if (!nz.length)
@@ -130,6 +131,112 @@ function PlatformPicker({ value, onChange }) {
             React.createElement(AlertTriangle, { size: 11 }),
             " May play ads mid-song without YouTube Premium"))));
 }
+// ============================================================================
+// Real YouTube search box — replaces manual title/artist typing when the
+// captain's chosen source is YouTube. Debounces requests over the existing
+// WebSocket connection and shows real, pickable results.
+// ============================================================================
+function YouTubeSearchBox({ dispatch, onPick, teamColor }) {
+    const [query, setQuery] = useState("");
+    const [results, setResults] = useState([]);
+    const [searching, setSearching] = useState(false);
+    const [err, setErr] = useState(null);
+    const debounceRef = useRef(null);
+    const reqIdRef = useRef(0);
+    useEffect(() => {
+        function handler(e) {
+            const msg = e.detail;
+            if (msg.requestId !== reqIdRef.current)
+                return; // stale response, ignore
+            setSearching(false);
+            setErr(msg.error || null);
+            setResults(msg.results || []);
+        }
+        window.addEventListener("song-battle-search-results", handler);
+        return () => window.removeEventListener("song-battle-search-results", handler);
+    }, []);
+    useEffect(() => {
+        clearTimeout(debounceRef.current);
+        if (!query.trim()) {
+            setResults([]);
+            setSearching(false);
+            return;
+        }
+        setSearching(true);
+        debounceRef.current = setTimeout(() => {
+            reqIdRef.current += 1;
+            dispatch({ type: "SEARCH_SONG", query: query.trim(), requestId: reqIdRef.current });
+        }, 450);
+        return () => clearTimeout(debounceRef.current);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [query]);
+    return (React.createElement("div", { className: "flex flex-col gap-2" },
+        React.createElement("div", { className: "flex items-center gap-2 px-3 py-2 rounded-lg", style: { background: "#1E1B2E", border: `1px solid ${teamColor}55` } },
+            React.createElement(Search, { size: 14, color: "#9C96B8" }),
+            React.createElement("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search YouTube for a song\u2026", className: "flex-1 bg-transparent outline-none text-sm", style: { color: "#F5F3FF" } })),
+        searching && React.createElement("p", { className: "text-[10px] text-center", style: { color: "#635D80" } }, "Searching\u2026"),
+        err && React.createElement("p", { className: "text-[10px] text-center", style: { color: "#FF3D6E" } }, err),
+        results.length > 0 && (React.createElement("div", { className: "flex flex-col gap-1.5", style: { maxHeight: 220, overflowY: "auto" } }, results.map((r) => (React.createElement("button", { key: r.videoId, onClick: () => onPick(r), className: "glowbtn flex items-center gap-2 p-1.5 rounded-lg text-left", style: { background: "#1E1B2E", border: "1px solid #2A2640" } },
+            r.thumbnail && React.createElement("img", { src: r.thumbnail, alt: "", style: { width: 44, height: 44, borderRadius: 6, objectFit: "cover", flexShrink: 0 } }),
+            React.createElement("div", { style: { minWidth: 0 } },
+                React.createElement("p", { className: "text-xs font-bold", style: { color: "#F5F3FF", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, r.title),
+                React.createElement("p", { className: "text-[10px]", style: { color: "#9C96B8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, r.channelTitle)))))))));
+}
+// ============================================================================
+// Host-only real YouTube playback via the IFrame Player API. Renders nothing
+// on non-host views. Loads the API script once, then loads/seeks/plays the
+// active team's video whenever the server reveals it.
+// ============================================================================
+function useYouTubeHostPlayer({ isHost, phase, activeTeam, revealed, playing, captainSong }) {
+    const playerRef = useRef(null);
+    const [apiReady, setApiReady] = useState(!!window.YT && !!window.YT.Player);
+    const containerRef = useRef(null);
+    useEffect(() => {
+        if (!isHost || apiReady)
+            return;
+        if (window.YT && window.YT.Player) {
+            setApiReady(true);
+            return;
+        }
+        const prevCallback = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => { setApiReady(true); if (prevCallback)
+            prevCallback(); };
+        if (!document.getElementById("youtube-iframe-api")) {
+            const tag = document.createElement("script");
+            tag.id = "youtube-iframe-api";
+            tag.src = "https://www.youtube.com/iframe_api";
+            document.head.appendChild(tag);
+        }
+    }, [isHost, apiReady]);
+    useEffect(() => {
+        if (!isHost || !apiReady || !containerRef.current || playerRef.current)
+            return;
+        playerRef.current = new window.YT.Player(containerRef.current, {
+            height: "180",
+            width: "320",
+            playerVars: { playsinline: 1, controls: 1, rel: 0 },
+        });
+    }, [isHost, apiReady]);
+    useEffect(() => {
+        if (!isHost || !playerRef.current || !playerRef.current.loadVideoById)
+            return;
+        const song = captainSong[activeTeam];
+        const isYouTube = song && song.source === "youtube" && song.videoId;
+        if (phase === "turn" && revealed[activeTeam] && isYouTube && playing) {
+            playerRef.current.loadVideoById({ videoId: song.videoId, startSeconds: song.startAt || 0 });
+            playerRef.current.playVideo();
+        }
+        else if (!playing) {
+            try {
+                playerRef.current.pauseVideo();
+            }
+            catch (e) { }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isHost, phase, activeTeam, revealed[0], revealed[1], playing]);
+    return containerRef;
+}
+const EMPTY_SONG_SOURCE = "spotify";
 function MusicBattle() {
     const [view, setView] = useState("host"); // host | captain0 | captain1 | player — LOCAL to this device only
     const [state, setState] = useState(null); // shared game state, pushed from server
@@ -138,7 +245,7 @@ function MusicBattle() {
     // local, private-until-submitted inputs — never sent to the server until the
     // relevant action fires, which is exactly what keeps a captain's draft song
     // and a player's in-progress vote invisible to everyone else on the network
-    const [songDraft, setSongDraft] = useState(emptySong("spotify"));
+    const [songDraft, setSongDraft] = useState(emptySong(EMPTY_SONG_SOURCE));
     const [customStartText, setCustomStartText] = useState("");
     const [myWinnerPick, setMyWinnerPick] = useState(null);
     const [myRatings, setMyRatings] = useState([0, 0]);
@@ -153,6 +260,9 @@ function MusicBattle() {
             const msg = JSON.parse(evt.data);
             if (msg.type === "STATE")
                 setState(msg.state);
+            if (msg.type === "SEARCH_RESULTS") {
+                window.dispatchEvent(new CustomEvent("song-battle-search-results", { detail: msg }));
+            }
         };
         return () => socket.close();
     }, []);
@@ -176,6 +286,15 @@ function MusicBattle() {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [state && state.phase, state && state.round, state && state.isSuddenDeath]);
+    const isHostView = view === "host";
+    const hostPlayerContainerRef = useYouTubeHostPlayer({
+        isHost: isHostView,
+        phase: state ? state.phase : null,
+        activeTeam: state ? state.activeTeam : 0,
+        revealed: state ? state.revealed : [false, false],
+        playing: state ? state.playing : false,
+        captainSong: state ? state.captainSong : [emptySong("spotify"), emptySong("spotify")],
+    });
     if (!state) {
         return (React.createElement("div", { style: { fontFamily: "'Manrope', sans-serif", background: "#100E1A", minHeight: "400px", color: "#F5F3FF", borderRadius: "16px", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: "10px" } },
             React.createElement(Sparkles, { size: 22, color: "#FFC53D" }),
@@ -192,6 +311,7 @@ function MusicBattle() {
     const captainTeam = view === "captain0" ? 0 : 1;
     const isActiveCaptain = isCaptain && captainTeam === activeTeam;
     const trackPosition = (captainSong[activeTeam]?.startAt || 0) + (turnSeconds - secondsLeft);
+    const activeSongIsYouTube = captainSong[activeTeam] && captainSong[activeTeam].source === "youtube" && captainSong[activeTeam].videoId;
     function nextRoundLabel() {
         if (isSuddenDeath)
             return t0.score === t1.score ? "SUDDEN DEATH AGAIN 🔥" : "SEE FINAL SCORES";
@@ -209,6 +329,9 @@ function MusicBattle() {
         if (!songDraft.title.trim())
             return;
         dispatch({ type: "LOCK_IN", team: captainTeam, song: songDraft });
+    }
+    function pickYouTubeResult(result) {
+        setSongDraft({ ...songDraft, title: result.title, artist: result.channelTitle, videoId: result.videoId, source: "youtube" });
     }
     return (React.createElement("div", { style: { fontFamily: "'Manrope', sans-serif", background: "#100E1A", minHeight: "600px", color: "#F5F3FF", borderRadius: "16px", overflow: "hidden", position: "relative" } },
         React.createElement("div", { className: "flex items-center justify-between px-4 pt-4 pb-2 flex-wrap gap-2", style: { borderBottom: "1px solid #221F35" } },
@@ -269,10 +392,15 @@ function MusicBattle() {
                             " Sudden death: only ",
                             CONFIG.SUDDEN_DEATH_SECONDS,
                             "s plays \u2014 pick the hook/chorus")),
-                        React.createElement("p", { className: "text-xs text-center", style: { color: "#9C96B8" } }, "Enter the song you're playing for your artist card (simulated search)"),
-                        React.createElement(PlatformPicker, { value: songDraft.source, onChange: (k) => setSongDraft({ ...songDraft, source: k }) }),
-                        React.createElement("input", { placeholder: "Song title", value: songDraft.title, onChange: (e) => setSongDraft({ ...songDraft, title: e.target.value }), className: "px-3 py-2 rounded-lg outline-none", style: { background: "#1E1B2E", border: `1px solid ${TEAM_COLORS[captainTeam].dim}`, color: "#F5F3FF" } }),
-                        React.createElement("input", { placeholder: "Artist", value: songDraft.artist, onChange: (e) => setSongDraft({ ...songDraft, artist: e.target.value }), className: "px-3 py-2 rounded-lg outline-none", style: { background: "#1E1B2E", border: `1px solid ${TEAM_COLORS[captainTeam].dim}`, color: "#F5F3FF" } }),
+                        React.createElement(PlatformPicker, { value: songDraft.source, onChange: (k) => setSongDraft({ ...songDraft, source: k, videoId: k === "youtube" ? songDraft.videoId : null }) }),
+                        songDraft.source === "youtube" ? (React.createElement(React.Fragment, null,
+                            React.createElement(YouTubeSearchBox, { dispatch: dispatch, onPick: pickYouTubeResult, teamColor: TEAM_COLORS[captainTeam].main }),
+                            songDraft.videoId && (React.createElement("div", { className: "px-3 py-2 rounded-lg text-center", style: { background: TEAM_COLORS[captainTeam].dim } },
+                                React.createElement("p", { className: "text-xs font-bold" }, songDraft.title),
+                                React.createElement("p", { className: "text-[10px]", style: { color: "#9C96B8" } }, songDraft.artist))))) : (React.createElement(React.Fragment, null,
+                            React.createElement("p", { className: "text-xs text-center", style: { color: "#9C96B8" } }, "Enter the song you're playing for your artist card (simulated search \u2014 real search coming for this platform)"),
+                            React.createElement("input", { placeholder: "Song title", value: songDraft.title, onChange: (e) => setSongDraft({ ...songDraft, title: e.target.value }), className: "px-3 py-2 rounded-lg outline-none", style: { background: "#1E1B2E", border: `1px solid ${TEAM_COLORS[captainTeam].dim}`, color: "#F5F3FF" } }),
+                            React.createElement("input", { placeholder: "Artist", value: songDraft.artist, onChange: (e) => setSongDraft({ ...songDraft, artist: e.target.value }), className: "px-3 py-2 rounded-lg outline-none", style: { background: "#1E1B2E", border: `1px solid ${TEAM_COLORS[captainTeam].dim}`, color: "#F5F3FF" } }))),
                         React.createElement("div", { className: "mt-2 flex items-center gap-1.5 justify-center" },
                             React.createElement(SkipForward, { size: 13, color: TEAM_COLORS[captainTeam].main }),
                             React.createElement("span", { className: "text-xs font-bold", style: { color: TEAM_COLORS[captainTeam].main } }, "Cue to the good part")),
@@ -322,6 +450,7 @@ function MusicBattle() {
                                 React.createElement(Radio, { size: 12, className: "animate-pulse" }),
                                 " PLAYING"),
                             songDone[activeTeam] && React.createElement("span", { className: "text-xs mt-1", style: { color: "#9C96B8" } }, "TIME'S UP"))),
+                    isHostView && activeSongIsYouTube && (React.createElement("div", { ref: hostPlayerContainerRef, style: { borderRadius: 12, overflow: "hidden" } })),
                     React.createElement("div", { className: "text-center px-4 py-2 rounded-lg", style: { background: TEAM_COLORS[activeTeam].dim } },
                         React.createElement("div", { className: "flex justify-center mb-1" },
                             React.createElement(SourceBadge, { source: captainSong[activeTeam].source })),

@@ -12,12 +12,54 @@
 // same WiFi network.
 // ============================================================================
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = __dirname;
+const CERT_PATH = path.join(PUBLIC_DIR, "cert.pem");
+const KEY_PATH = path.join(PUBLIC_DIR, "key.pem");
+const hasCert = fs.existsSync(CERT_PATH) && fs.existsSync(KEY_PATH);
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
+
+// ============================================================================
+// YouTube search — server-side so the API key never reaches the browser.
+// ============================================================================
+function searchYouTube(query, callback) {
+  if (!YOUTUBE_API_KEY) { callback(new Error("Server has no YOUTUBE_API_KEY configured"), null); return; }
+  const params = new URLSearchParams({
+    part: "snippet",
+    type: "video",
+    videoCategoryId: "10", // Music category
+    maxResults: "8",
+    q: query,
+    key: YOUTUBE_API_KEY,
+  });
+  const url = `https://www.googleapis.com/youtube/v3/search?${params.toString()}`;
+  https.get(url, (res) => {
+    let data = "";
+    res.on("data", (chunk) => { data += chunk; });
+    res.on("end", () => {
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.error) { callback(new Error(parsed.error.message || "YouTube API error"), null); return; }
+        const results = (parsed.items || [])
+          .filter((item) => item.id && item.id.videoId)
+          .map((item) => ({
+            videoId: item.id.videoId,
+            title: item.snippet.title,
+            channelTitle: item.snippet.channelTitle,
+            thumbnail: (item.snippet.thumbnails && item.snippet.thumbnails.default) ? item.snippet.thumbnails.default.url : "",
+          }));
+        callback(null, results);
+      } catch (e) {
+        callback(e, null);
+      }
+    });
+  }).on("error", (e) => callback(e, null));
+}
 
 // --- tweak gameplay here — mirrors the CONFIG block in index.html ---------
 const CONFIG = {
@@ -328,7 +370,7 @@ function broadcast() {
 
 // ---- static file server ----------------------------------------------------
 const MIME = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css" };
-const server = http.createServer((req, res) => {
+const requestHandler = (req, res) => {
   if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; } // avoid a noisy 404 for the browser's automatic favicon request
   let filePath = req.url === "/" ? "/index.html" : req.url;
   filePath = path.join(PUBLIC_DIR, filePath);
@@ -337,7 +379,11 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": MIME[path.extname(filePath)] || "text/plain" });
     res.end(data);
   });
-});
+};
+
+const server = hasCert
+  ? https.createServer({ cert: fs.readFileSync(CERT_PATH), key: fs.readFileSync(KEY_PATH) }, requestHandler)
+  : http.createServer(requestHandler);
 
 // ---- websocket upgrade handling, same http server + port ------------------
 server.on("upgrade", (req, socket, head) => {
@@ -366,7 +412,20 @@ server.on("upgrade", (req, socket, head) => {
       if (msg.opcode === 0x1) {
         try {
           const parsed = JSON.parse(msg.payload.toString("utf8"));
-          if (parsed.type === "ACTION") handleAction(parsed.action);
+          if (parsed.type === "ACTION" && parsed.action && parsed.action.type === "SEARCH_SONG") {
+            const { query, requestId } = parsed.action;
+            searchYouTube(query, (err, results) => {
+              const reply = JSON.stringify({
+                type: "SEARCH_RESULTS",
+                requestId,
+                results: err ? [] : results,
+                error: err ? err.message : null,
+              });
+              if (!socket.destroyed) socket.write(encodeFrame(Buffer.from(reply, "utf8")));
+            });
+          } else if (parsed.type === "ACTION") {
+            handleAction(parsed.action);
+          }
         } catch (e) {
           console.error("Bad message from client:", e.message);
         }
@@ -379,7 +438,20 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\nSong Battle server running.`);
-  console.log(`On this computer:  http://localhost:${PORT}`);
-  console.log(`On other devices:  http://<this-computer's-LAN-IP>:${PORT}\n`);
+  const scheme = hasCert ? "https" : "http";
+  console.log(`\nSong Battle server running (${hasCert ? "HTTPS — cert.pem/key.pem found" : "HTTP — no cert.pem/key.pem found"}).`);
+  console.log(`On this computer:  ${scheme}://localhost:${PORT}`);
+  console.log(`On other devices:  ${scheme}://<this-computer's-LAN-IP>:${PORT}`);
+  if (!hasCert) {
+    console.log(`\nNote: real music SDKs (Spotify/Apple Music) generally require HTTPS.`);
+    console.log(`See README.md for how to generate a local cert.pem/key.pem to enable it.\n`);
+  } else {
+    console.log(`\nFirst visit on each device: your browser will warn that the certificate`);
+    console.log(`isn't from a trusted authority (it's self-signed, just for local testing).`);
+    console.log(`Choose "Advanced" / "Visit anyway" to proceed — this is expected.\n`);
+  }
+  if (!YOUTUBE_API_KEY) {
+    console.log(`Warning: YOUTUBE_API_KEY is not set — song search will return an error.`);
+    console.log(`Set it as an environment variable (see README.md).\n`);
+  }
 });
