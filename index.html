@@ -110,6 +110,73 @@ function MysteryCard({ color, size = 150 }) {
     return (React.createElement("div", { className: "flex items-center justify-center rounded-2xl", style: { width: size, height: size * 1.3, border: `2px dashed ${color}`, background: "repeating-linear-gradient(135deg, #1E1B2E, #1E1B2E 10px, #221F35 10px, #221F35 20px)" } },
         React.createElement("span", { className: "disp text-5xl animate-pulse", style: { color } }, "?")));
 }
+// ============================================================================
+// Decorative bar visualizer for the host screen. NOT audio-reactive — browsers
+// can't pull real frequency data out of a cross-origin YouTube iframe, so this
+// is a lively simulated animation instead: bars retarget to new random heights
+// on a beat-ish interval and smoothly ease toward them every frame, colored to
+// match whichever team is currently playing. Works identically regardless of
+// platform, since it isn't actually reading the audio.
+// ============================================================================
+function Visualizer({ color, active, width = 300, height = 130 }) {
+    const canvasRef = useRef(null);
+    const barsRef = useRef(null);
+    const rafRef = useRef(null);
+    const BAR_COUNT = 26;
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas)
+            return;
+        if (!barsRef.current) {
+            barsRef.current = Array.from({ length: BAR_COUNT }, () => ({ h: 0.08, target: 0.08 }));
+        }
+        const ctx = canvas.getContext("2d");
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        let lastRetarget = 0;
+        function frame(t) {
+            const bars = barsRef.current;
+            if (active) {
+                if (t - lastRetarget > 90) {
+                    lastRetarget = t;
+                    bars.forEach((b) => { b.target = 0.15 + Math.random() * 0.85; });
+                }
+                bars.forEach((b) => { b.h += (b.target - b.h) * 0.35; });
+            }
+            else {
+                bars.forEach((b) => { b.target = 0.06; b.h += (b.target - b.h) * 0.15; });
+            }
+            ctx.clearRect(0, 0, width, height);
+            const barWidth = width / BAR_COUNT;
+            bars.forEach((b, i) => {
+                const h = Math.max(2, b.h * height);
+                const x = i * barWidth;
+                const y = height - h;
+                const grad = ctx.createLinearGradient(0, y, 0, height);
+                grad.addColorStop(0, color);
+                grad.addColorStop(1, `${color}22`);
+                ctx.fillStyle = grad;
+                const w = barWidth * 0.7;
+                const rx = x + barWidth * 0.15;
+                const r = Math.min(4, w / 2);
+                ctx.beginPath();
+                ctx.moveTo(rx, y + r);
+                ctx.arcTo(rx, y, rx + r, y, r);
+                ctx.arcTo(rx + w, y, rx + w, y + r, r);
+                ctx.lineTo(rx + w, height);
+                ctx.lineTo(rx, height);
+                ctx.closePath();
+                ctx.fill();
+            });
+            rafRef.current = requestAnimationFrame(frame);
+        }
+        rafRef.current = requestAnimationFrame(frame);
+        return () => cancelAnimationFrame(rafRef.current);
+    }, [color, active, width, height]);
+    return React.createElement("canvas", { ref: canvasRef, style: { width, height, borderRadius: 12, display: "block" } });
+}
 function SourceBadge({ source }) {
     const info = platformInfo(source);
     const Icon = PLATFORM_ICON[info.key] || Music2;
@@ -220,8 +287,8 @@ function useYouTubeHostPlayer({ isHost, phase, activeTeam, revealed, playing, ca
         if (!apiReady || !containerRef.current || playerRef.current)
             return;
         playerRef.current = new window.YT.Player(containerRef.current, {
-            height: "180",
-            width: "320",
+            height: "90",
+            width: "160",
             playerVars: { playsinline: 1, controls: 1, rel: 0 },
         });
     }, [apiReady]);
@@ -355,9 +422,13 @@ function MusicBattle() {
             ].map((o) => (React.createElement("button", { key: o.k, onClick: () => setView(o.k), className: "glowbtn px-2.5 py-1.5 rounded-full text-xs font-bold", style: { background: view === o.k ? "#FFC53D" : "transparent", color: view === o.k ? "#100E1A" : "#9C96B8" } }, o.label))))),
         React.createElement("div", { className: "p-5", style: { minHeight: "540px" } },
             React.createElement("div", { ref: hostPlayerContainerRef, style: {
-                    display: isHostView && phase === "turn" && revealed[activeTeam] && activeSongIsYouTube ? "flex" : "none",
-                    justifyContent: "center",
-                    marginBottom: 16,
+                    display: "flex",
+                    justifyContent: "flex-end",
+                    overflow: "hidden",
+                    transition: "width 0.2s, height 0.2s, margin 0.2s",
+                    ...(isHostView && phase === "turn" && revealed[activeTeam] && activeSongIsYouTube
+                        ? { width: "auto", height: "auto", marginBottom: 8 }
+                        : { width: "1px", height: "1px", marginBottom: 0 }),
                 } }),
             phase === "setup" && (React.createElement("div", { className: "flex flex-col gap-5 max-w-md mx-auto pt-6" },
                 React.createElement("div", { className: "flex items-center gap-2 justify-center" },
@@ -455,8 +526,9 @@ function MusicBattle() {
                         teams[activeTeam].name,
                         "'s captain to hit play, whenever they're ready\u2026"))),
                 revealed[activeTeam] && (React.createElement("div", { className: "flex flex-col items-center gap-4" },
+                    isHostView && (React.createElement(Visualizer, { color: activeColor, active: playing, width: 300, height: 120 })),
                     React.createElement("div", { className: "relative flex items-center justify-center" },
-                        React.createElement(TimerRing, { pct: playing ? pct : songDone[activeTeam] ? 0 : 1, color: activeColor }),
+                        React.createElement(TimerRing, { pct: playing ? pct : songDone[activeTeam] ? 0 : 1, color: activeColor, size: isHostView ? 150 : 220 }),
                         React.createElement("div", { className: "absolute flex flex-col items-center" },
                             React.createElement("span", { className: "disp text-4xl" }, fmt(secondsLeft)),
                             playing && React.createElement("span", { className: "flex items-center gap-1 text-xs mt-1", style: { color: activeColor } },
