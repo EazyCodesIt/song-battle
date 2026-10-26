@@ -379,7 +379,7 @@ const requestHandler = (req, res) => {
   filePath = path.join(PUBLIC_DIR, filePath);
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end("Not found"); return; }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath)] || "text/plain" });
+    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath)] || "text/plain", "Cache-Control": "no-cache" });
     res.end(data);
   });
 };
